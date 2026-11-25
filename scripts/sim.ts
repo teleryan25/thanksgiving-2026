@@ -1,0 +1,10 @@
+import { runSimulation } from '../src/domain/simulation';
+import { fmtTime } from '../src/domain/time';
+const mode = (process.argv[2] ?? 'nominal') as 'nominal' | 'random' | 'max';
+const seed = Number(process.argv[3] ?? 1);
+const t0 = performance.now();
+const r = runSimulation({ durations: mode, seed });
+console.log(`${mode} seed=${seed}: ${r.completed}/${r.total} done, dinner ${r.dinnerMs && fmtTime(r.dinnerMs)} (first projection ${r.firstProjectionMs && fmtTime(r.firstProjectionMs)}), steps ${r.steps}, ${((performance.now() - t0) / 1000).toFixed(1)}s, max exposure ${r.maxExposureMin}, interruptions ${r.checkpointInterruptions}`);
+console.log('plan violations', r.planViolations.slice(0, 10));
+console.log('history violations', r.historyViolations.slice(0, 10));
+console.log('honesty', r.honestyViolations.slice(0, 10));
