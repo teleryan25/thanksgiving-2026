@@ -118,3 +118,5 @@ Checked in every run: all tasks complete; no burner, cookware, oven-capacity, tw
 
 ## Deployment
 Push to `main` → `.github/workflows/pages.yml` (typecheck, unit tests, build, deploy to Pages). `ci.yml` also runs Playwright.
+
+**Verified Nov 25 2026** with `node scripts/verify-live.mjs` (headless Chromium, 390×844) against https://teleryan25.github.io/thanksgiving-2026/: HTTP 200; projected dinner 1:09 PM; service worker controlling; "Offline-ready (20/20 files cached)"; in-app diagnostics 13 passed, 0 failed; offline reload OK; no console errors. GitHub Actions: CI (typecheck, Vitest, build, Playwright) and the Pages deploy both green.
