@@ -33,13 +33,13 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin || !url.pathname.startsWith(BASE)) return;
   if (req.mode === 'navigate') {
     event.respondWith(
-      caches.open(CACHE).then(async (cache) => (await cache.match(BASE)) || (await cache.match(BASE + 'index.html')) || fetch(req)),
+      caches.open(CACHE).then(async (cache) => (await cache.match(BASE, { ignoreVary: true })) || (await cache.match(BASE + 'index.html', { ignoreVary: true })) || fetch(req)),
     );
     return;
   }
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
-      const hit = await cache.match(req, { ignoreSearch: true });
+      const hit = await cache.match(req, { ignoreSearch: true, ignoreVary: true });
       if (hit) return hit;
       return fetch(req);
     }),

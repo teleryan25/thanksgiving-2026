@@ -162,6 +162,19 @@ p {
   align-items: center;
   flex-wrap: wrap;
 }
+.sim-banner .btn {
+  color: var(--charcoal);
+  flex: none;
+}
+.sim-banner .btn.terra {
+  color: #fff;
+}
+.sim-banner .row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
 .sim-banner .tag {
   background: var(--terra);
   padding: 2px 8px;

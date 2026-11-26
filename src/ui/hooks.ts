@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { plan as planSync, type Plan, type PlanInput } from '../domain/scheduler';
+import type { Plan, PlanInput } from '../domain/scheduler';
+import { planAsync } from './workerClient';
 import { ActionError, initialState, planInputFrom, reduce, type Action, type CookState } from '../domain/state';
 import { KEYS, loadState, saveState, type KV } from '../domain/storage';
 import { MINUTE } from '../domain/time';
@@ -116,51 +117,27 @@ export function useCookStore(kv: KV, mode: Mode): Store {
 /** Plan in a Web Worker so the UI never janks; recomputes on state change and each minute. */
 export function usePlan(state: CookState, now: number): { plan: Plan | null; input: PlanInput; computing: boolean } {
   const minute = Math.floor(now / MINUTE);
-  const input = useMemo(() => planInputFrom(state, now), [state, minute]); // eslint-disable-line react-hooks/exhaustive-deps
   const [result, setResult] = useState<{ plan: Plan; key: PlanInput } | null>(null);
-  const workerRef = useRef<Worker | null>(null);
-  const seqRef = useRef(0);
-  const pending = useRef(new Map<number, PlanInput>());
-
+  const prevRef = useRef<Plan | null>(null);
+  const input = useMemo(() => {
+    const base = planInputFrom(state, now);
+    // Stability hint: the previous plan's start times for tasks still scheduled.
+    const prev = prevRef.current;
+    if (!prev || prev.tasks === undefined) return base;
+    const hint: Record<string, number> = {};
+    for (const [id, x] of Object.entries(prev.tasks)) if (x.status === 'scheduled' && x.startMs != null) hint[id] = x.startMs;
+    return { ...base, hint };
+  }, [state, minute]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    let w: Worker | null = null;
-    try {
-      w = new Worker(new URL('./planWorker.ts', import.meta.url), { type: 'module' });
-      w.onmessage = (e: MessageEvent<{ id: number; plan?: Plan; error?: string }>) => {
-        const key = pending.current.get(e.data.id);
-        pending.current.delete(e.data.id);
-        if (e.data.id !== seqRef.current || !key || !e.data.plan) return;
-        setResult({ plan: e.data.plan, key });
-      };
-      w.onerror = () => {
-        workerRef.current = null;
-      };
-    } catch {
-      w = null;
-    }
-    workerRef.current = w;
-    return () => w?.terminate();
-  }, []);
-
-  useEffect(() => {
-    const id = ++seqRef.current;
-    const w = workerRef.current;
-    if (w) {
-      pending.current.set(id, input);
-      const { tasks: _t, dishes: _d, ...rest } = input;
-      w.postMessage({ id, input: rest });
-      // Safety net: if the worker is slow or broken, compute on the main thread.
-      const timeout = window.setTimeout(() => {
-        if (seqRef.current === id && pending.current.has(id)) {
-          pending.current.delete(id);
-          setResult({ plan: planSync(input), key: input });
-        }
-      }, 4000);
-      return () => window.clearTimeout(timeout);
-    } else {
-      setResult({ plan: planSync(input), key: input });
-    }
+    let live = true;
+    void planAsync(input).then((p) => {
+      if (!live) return;
+      prevRef.current = p;
+      setResult({ plan: p, key: input });
+    });
+    return () => {
+      live = false;
+    };
   }, [input]);
-
   return { plan: result?.plan ?? null, input, computing: result?.key !== input };
 }

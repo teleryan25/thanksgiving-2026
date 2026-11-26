@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { renderStep } from '../domain/audit';
 import type { TaskDef } from '../domain/model';
 import { DISHES, TASKS, COOKWARE } from '../domain/recipes';
@@ -14,6 +14,11 @@ export const cookwareName = (id: string) => COOKWARE.find((c) => c.id === id)?.n
 export type Dispatch = (a: Action) => { ok: boolean; message?: string };
 
 export function Sheet({ title, onClose, children, testId }: { title: string; onClose: () => void; children: ReactNode; testId?: string }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <div className="overlay" role="dialog" aria-modal="true" aria-label={title} onClick={onClose} data-testid={testId}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>

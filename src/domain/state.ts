@@ -183,7 +183,8 @@ export type Action =
   | { type: 'recipe/toggle'; key: string }
   | { type: 'settings'; patch: Partial<Settings> }
   | { type: 'reset'; scope: 'progress' | 'all' }
-  | { type: 'sim/set'; ms: number };
+  | { type: 'sim/set'; ms: number }
+  | { type: 'sim/expireTimers' };
 
 export class ActionError extends Error {}
 
@@ -352,6 +353,9 @@ export function reduce(state: CookState, action: Action, now: number): Result {
         return { state: { ...fresh, shopping: state.shopping, recipeChecks: state.recipeChecks, settings: state.settings, seq }, message: 'Cooking progress and timers reset. Shopping checks and settings kept.' };
       return { state: { ...fresh, seq }, message: 'Everything reset.' };
     }
+    case 'sim/expireTimers':
+      if (state.namespace !== 'sim') throw new ActionError('Only simulated timers can be expired instantly.');
+      return { state: { ...state, timers: state.timers.map((x) => (timerStatus(x, now) === 'running' ? { ...x, deadlineMs: now } : x)) }, message: 'All running simulated timers expired.' };
     case 'sim/set':
       if (state.namespace !== 'sim') throw new ActionError('The live clock cannot be changed.');
       return { state: { ...state, simNow: action.ms } };

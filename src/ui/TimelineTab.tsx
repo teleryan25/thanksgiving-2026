@@ -100,11 +100,27 @@ export function TimelineTab({ plan, now, dispatch, toast }: { plan: Plan; now: n
           <div className="section-title" style={{ marginTop: 0 }}>
             Attention
           </div>
-          {plan.warnings.map((w, i) => (
-            <div key={i} className={`card ${w.level === 'danger' ? 'alert' : w.level === 'warn' ? 'warn' : ''}`} style={{ padding: 10 }} data-testid={`warning-${w.code}`}>
-              {w.text}
-            </div>
-          ))}
+          {plan.warnings
+            .filter((w) => w.level !== 'info')
+            .map((w, i) => (
+              <div key={i} className={`card ${w.level === 'danger' ? 'alert' : 'warn'}`} style={{ padding: 10 }} data-testid={`warning-${w.code}`}>
+                {w.text}
+              </div>
+            ))}
+          {plan.warnings.some((w) => w.level === 'info') && (
+            <details className="card" style={{ padding: '4px 14px' }}>
+              <summary>Holding & leftovers notes ({plan.warnings.filter((w) => w.level === 'info').length})</summary>
+              <ul className="plain small">
+                {plan.warnings
+                  .filter((w) => w.level === 'info')
+                  .map((w, i) => (
+                    <li key={i} data-testid={`warning-${w.code}`}>
+                      {w.text}
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          )}
         </>
       )}
 
