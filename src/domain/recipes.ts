@@ -1287,6 +1287,7 @@ export const TASKS: TaskDef[] = [
   },
   {
     id: 'mash-brown-butter',
+    finishWithinOfDinner: 75,
     dish: 'mash',
     title: 'Brown the butter',
     kind: 'stove',
