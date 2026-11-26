@@ -107,6 +107,8 @@ export interface TaskDef {
   extendOptions?: number[];
   /** Last task for a dish: its end is when the dish is ready to serve. */
   final?: boolean;
+  /** Hard lower bound: never finish more than this many minutes before the dinner target. */
+  finishWithinOfDinner?: number;
   /** Soft priority: prefer finishing at least this many minutes before the dinner target. */
   preferDoneBeforeDinner?: number;
   /** Higher = should finish closer to dinner. */

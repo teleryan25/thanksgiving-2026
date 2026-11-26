@@ -8,3 +8,4 @@ console.log(`${mode} seed=${seed}: ${r.completed}/${r.total} done, dinner ${r.di
 console.log('plan violations', r.planViolations.slice(0, 10));
 console.log('history violations', r.historyViolations.slice(0, 10));
 console.log('honesty', r.honestyViolations.slice(0, 10));
+console.log('no-wait gaps', r.noWaitGaps, 'breaches', r.exposureBreaches.map((b) => `${b.dish} ${b.minutes}m warned ${b.warnedAt ? fmtTime(b.warnedAt) : 'NEVER'}`));

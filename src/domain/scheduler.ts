@@ -56,6 +56,8 @@ export interface PlanInput {
   turkeyEtaMs: number;
   paused: boolean;
   settings: PlanSettings;
+  /** Previous plan's start times (stability hint): kept unless a new plan is clearly better. */
+  hint?: Record<string, number>;
 }
 
 export type PlanStatus = 'done' | 'running' | 'scheduled' | 'blocked' | 'skipped' | 'unschedulable';
@@ -120,7 +122,10 @@ export interface Plan {
 
 const HORIZON = 36 * 60;
 const WINDOWS = [45, 75, 105, 150, 210, Number.POSITIVE_INFINITY];
-const SAMPLES = 40;
+const SAMPLES = 60;
+const TOP_K = 3;
+/** Score margin (≈ 2 min of acceptable lateness) a new plan must beat the previous one by. */
+const STABILITY_SLACK = 600;
 const SEED = 20261126;
 
 /** Small deterministic PRNG so sampling is reproducible. */
@@ -164,6 +169,8 @@ interface Unit {
   ls: number;
   lf: number;
   release: number;
+  /** Release from ETA / delays / now — never pulled earlier. */
+  hardRelease: number;
 }
 
 class Profile {
@@ -408,6 +415,7 @@ export function plan(input: PlanInput): Plan {
   for (const w of pending) if (w.def.follows && pendingSet.has(w.def.follows)) follower.set(w.def.follows, w.def.id);
   const units: Unit[] = [];
   const unitOf = new Map<string, Unit>();
+  const orphanFollower = new Set<Unit>();
   for (const w of pending) {
     if (w.def.follows && pendingSet.has(w.def.follows)) continue; // not a chain head
     const members: Work[] = [w];
@@ -434,15 +442,49 @@ export function plan(input: PlanInput): Plan {
       ls,
       lf: ls + off,
       release: 0,
+      hardRelease: 0,
     };
     // Followers of a running/finished task must start as soon as possible.
-    if (w.def.follows && !pendingSet.has(w.def.follows)) u.timing = 'asap';
+    if (w.def.follows && !pendingSet.has(w.def.follows) && live(W.get(w.def.follows)!)) {
+      u.timing = 'asap';
+      orphanFollower.add(u);
+    }
     units.push(u);
     for (const m of members) unitOf.set(m.def.id, u);
   }
 
+  // Food-safety release: a dish's first cooked perishable must not finish so early that, even
+  // with the remaining heating steps, it would exceed (limit − 15 min) before the target dinner.
+  const limitMin = settings.hotRoom ? 60 : 120;
+  const safeRelease = new Map<string, number>();
+  for (const dish of input.dishes) {
+    if (!dish.exposure || dish.exposure.until || !dish.serveHot) continue;
+    for (const f of dish.exposure.from) {
+      const fw = W.get(f);
+      if (!fw || fw.status !== 'scheduled') continue;
+      const desc = new Set<string>();
+      const walk = (id: string) => {
+        for (const s2 of succ.get(id) ?? []) if (!desc.has(s2)) {
+          desc.add(s2);
+          walk(s2);
+        }
+      };
+      walk(f);
+      const heatAfter = tasks.filter((t) => t.dish === dish.id && t.heating && desc.has(t.id)).reduce((a, t) => a + W.get(t.id)!.dNom, 0);
+      safeRelease.set(f, targetRel - (limitMin - 15) - heatAfter - fw.dNom);
+    }
+  }
+  // Prerequisites of an orphan follower (e.g. warm cream for mash once potatoes are boiling).
+  const feeders = new Set<Unit>();
+  for (const u of orphanFollower)
+    for (const m of u.members)
+      for (const d of m.def.deps) {
+        const du = unitOf.get(d.id);
+        if (du && du !== u) feeders.add(du);
+      }
   const baseRelease = (w: Work): number => {
-    let r = planStart;
+    let r = Math.max(planStart, safeRelease.get(w.def.id) ?? Number.NEGATIVE_INFINITY);
+    if (w.def.finishWithinOfDinner != null) r = Math.max(r, targetRel - w.def.finishWithinOfDinner - w.dNom);
     const nb = progress[w.def.id]?.notBefore;
     if (nb != null) r = Math.max(r, relCeil(nb));
     if (w.def.release === 'turkeyEta') r = Math.max(r, turkeyRel);
@@ -535,6 +577,7 @@ export function plan(input: PlanInput): Plan {
         m.status = 'scheduled';
         r = Math.max(r, baseRelease(m) - u.offsets[i]!);
       });
+      u.hardRelease = Math.max(r, planStart);
       const x = win(u);
       if (u.timing === 'jit' && Number.isFinite(x)) r = Math.max(r, u.ls - x);
       const extra = minRelease?.(u);
@@ -545,11 +588,46 @@ export function plan(input: PlanInput): Plan {
 
   const prioNoise = new Map<Unit, number>();
   const forwardList = (p: Profile) => {
-    const key = (u: Unit) => u.ls + (prioNoise.get(u) ?? 0);
+    // Followers of a running/finished task (no-wait) always go first.
+    // Oven temperature changes are the day's backbone and also go first.
+    const key = (u: Unit) =>
+      orphanFollower.has(u) || feeders.has(u) || u.members[0]!.def.kind === 'oven-transition' ? Number.NEGATIVE_INFINITY : u.ls + (prioNoise.get(u) ?? 0);
     const prio = [...units].sort((a, b) => key(a) - key(b) || a.idx - b.idx);
     let remaining = prio.length;
+    // Reserve no-wait followers of running/finished tasks first, right at their head's end.
+    for (const u of prio) {
+      if (!orphanFollower.has(u)) continue;
+      for (const m of u.members)
+        for (const d of m.def.deps) {
+          const du = unitOf.get(d.id);
+          if (du && du !== u && du.start == null) du.release = Math.max(planStart, du.hardRelease);
+        }
+      const ready = unitDepReady(u);
+      if (ready == null) continue;
+      for (let s = Math.max(u.release, ready, planStart); s < HORIZON; s++) {
+        const ch = unitFits(p, u, s);
+        if (ch) {
+          placeUnit(p, u, s, ch);
+          remaining--;
+          break;
+        }
+      }
+    }
     const readyAt = new Map<Unit, number | null>();
     for (let t = planStart; t < HORIZON && remaining > 0; t++) {
+      // A released chain whose LATER member waits on an unreleased prerequisite pulls that release in
+      // (e.g. boil→mash needs the warm cream); otherwise the whole chain would slide.
+      for (const u of prio) {
+        if (u.start != null || u.release > t) continue;
+        for (const m of orphanFollower.has(u) ? u.members : u.members.slice(1))
+          for (const d of m.def.deps) {
+            const du = unitOf.get(d.id);
+            if (du && du !== u && du.start == null && du.release > Math.max(t, du.hardRelease)) {
+              du.release = Math.max(t, du.hardRelease);
+              readyAt.delete(u);
+            }
+          }
+      }
       for (const u of prio) {
         if (u.start != null || u.release > t) continue;
         let ready = readyAt.get(u);
@@ -645,7 +723,7 @@ export function plan(input: PlanInput): Plan {
       .filter((t) => t.final)
       .map((t) => W.get(t.id)!)
       .filter((w) => live(w) && w.end != null);
-  const limit = settings.hotRoom ? 60 : 120;
+  const limit = limitMin;
 
   const snapshot = (label: string): Snapshot => {
     const finals = finalsOf();
@@ -689,9 +767,24 @@ export function plan(input: PlanInput): Plan {
     forwardList(p);
     const finals = finalsOf();
     const D = Math.max(targetRel, finals.length ? Math.max(...finals.map((w) => w.end!)) : planStart);
+    const nowUnits = units.filter((u) => u.start === planStart && u.members.some((m) => m.cookOwner && m.def.attention !== 'external'));
     backwardJustify(p, D, order);
     forwardJustifyAsap(p);
     backwardJustify(p, D, order);
+    // Running behind, the deadline moves with "now": if justification left the cook idle now,
+    // put the forward pass's "now" work back, or the plan would re-defer it every minute.
+    if (D > targetRel && p.cook[planStart] === 0)
+      for (const u of nowUnits) {
+        if (u.start === planStart) break;
+        const cur = u.start!;
+        const curCh = unplaceUnit(p, u);
+        const ch = unitFits(p, u, planStart);
+        if (ch) {
+          placeUnit(p, u, planStart, ch);
+          break;
+        }
+        placeUnit(p, u, cur, curCh);
+      }
     return snapshot(label);
   };
 
@@ -699,8 +792,6 @@ export function plan(input: PlanInput): Plan {
   if (units.length) {
     let bestWin = Number.POSITIVE_INFINITY;
     let bestOrder: OrderKey = 'chain';
-    let bestWinMap: Map<Unit, number> | null = null;
-    let bestNoise = new Map<Unit, number>();
     for (const order of ['chain', 'lf'] as OrderKey[])
       for (const win of WINDOWS) {
         const snap = run(() => win, order, `forward/${order}/W${win}`);
@@ -711,6 +802,14 @@ export function plan(input: PlanInput): Plan {
         }
       }
     // Multi-pass sampling (deterministic seed): perturb per-unit release windows and priorities.
+    interface Cand {
+      snap: Snapshot;
+      order: OrderKey;
+      wins: Map<Unit, number> | null;
+      win: number;
+      noise: Map<Unit, number>;
+    }
+    const pool: Cand[] = [{ snap: best!, order: bestOrder, wins: null, win: bestWin, noise: new Map() }];
     const rand = mulberry32(SEED);
     const jitUnits = units.filter((u) => u.timing === 'jit');
     for (let i = 0; i < SAMPLES; i++) {
@@ -720,44 +819,62 @@ export function plan(input: PlanInput): Plan {
       for (const u of units) prioNoise.set(u, Math.floor(rand() * 40) - 20);
       const order: OrderKey = rand() < 0.5 ? 'chain' : 'lf';
       const snap = run((u) => wins.get(u) ?? Number.POSITIVE_INFINITY, order, `sample/${order}`);
-      if (snap.score < best!.score) {
-        best = snap;
-        bestOrder = order;
-        bestWinMap = wins;
-        bestNoise = new Map(prioNoise);
-      }
+      pool.push({ snap, order, wins, win: Number.POSITIVE_INFINITY, noise: new Map(prioNoise) });
     }
-    prioNoise.clear();
-    for (const [u, n] of bestNoise) prioNoise.set(u, n);
-    // Coordinate descent: delay the unit where each hot dish's room-temperature exposure begins
-    // (e.g. browning the sausage) so the dish is assembled and cooked closer to dinner.
+    // Stability: re-run the previous plan's ordering/timing; prefer it unless clearly beaten.
+    let hinted: Snapshot | null = null;
+    if (input.hint) {
+      const hint = input.hint;
+      const hintStart = (u: Unit) => (hint[u.id] != null ? rel(hint[u.id]!) : null);
+      prioNoise.clear();
+      for (const u of units) {
+        const h = hintStart(u);
+        if (h != null) prioNoise.set(u, h - u.ls);
+      }
+      hinted = run(() => Number.POSITIVE_INFINITY, 'chain', 'previous', (u) => {
+        const h = hintStart(u);
+        return h != null && u.timing === 'jit' ? h : undefined;
+      });
+      pool.push({ snap: hinted, order: 'chain', wins: null, win: Number.POSITIVE_INFINITY, noise: new Map(prioNoise) });
+    }
+    pool.sort((x, y) => x.snap.score - y.snap.score);
+    // Coordinate descent from the top candidates: delay the unit where each hot dish's
+    // room-temperature exposure begins (e.g. browning the sausage) so it cooks closer to dinner.
     const expUnits = input.dishes
       .flatMap((d) => (d.exposure && !d.exposure.until ? d.exposure.from.map((f) => unitOf.get(f)) : []))
       .filter((u, i, arr): u is Unit => !!u && u.timing === 'jit' && arr.indexOf(u) === i)
       .sort((a, b) => a.idx - b.idx);
-    const override = new Map<Unit, number>();
-    const release = (u: Unit) => override.get(u);
-    for (let sweep = 0; sweep < 2; sweep++) {
-      let improved = false;
-      for (const u of expUnits) {
-        const cur = best!.starts.get(u.id)!.start;
-        if (cur < 0) continue;
-        const prev = override.get(u);
-        let keep = prev;
-        for (const delta of [10, 20, 30, 45, 60, 90]) {
-          override.set(u, cur + delta);
-          const snap = run((x) => bestWinMap?.get(x) ?? bestWin, bestOrder, `${best!.label}+delay`, release);
-          if (snap.score < best!.score) {
-            best = snap;
-            keep = cur + delta;
-            improved = true;
+    best = pool[0]!.snap;
+    for (const c of pool.slice(0, TOP_K)) {
+      prioNoise.clear();
+      for (const [u, n] of c.noise) prioNoise.set(u, n);
+      let local = c.snap;
+      const override = new Map<Unit, number>();
+      const release = (u: Unit) => override.get(u);
+      for (let sweep = 0; sweep < 2; sweep++) {
+        let improved = false;
+        for (const u of expUnits) {
+          const cur = local.starts.get(u.id)!.start;
+          if (cur < 0) continue;
+          let keep = override.get(u);
+          for (const delta of [10, 20, 30, 45, 60, 90]) {
+            override.set(u, cur + delta);
+            const snap = run((x) => c.wins?.get(x) ?? c.win, c.order, `${c.snap.label}+delay`, release);
+            if (snap.score < local.score) {
+              local = snap;
+              keep = cur + delta;
+              improved = true;
+            }
           }
+          if (keep == null) override.delete(u);
+          else override.set(u, keep);
         }
-        if (keep == null) override.delete(u);
-        else override.set(u, keep);
+        if (!improved) break;
       }
-      if (!improved) break;
+      if (local.score < best!.score) best = local;
     }
+    if (hinted && hinted.score <= best!.score + STABILITY_SLACK) best = hinted;
+    prioNoise.clear();
     for (const [id, s] of best!.starts) {
       const w = W.get(id)!;
       w.status = s.status;
@@ -850,7 +967,12 @@ export function plan(input: PlanInput): Plan {
   const startable = order.filter((id) => out[id]!.startableNow);
   const dueNow = startable.filter((id) => (out[id]!.startMs ?? Infinity) <= input.nowMs + 30_000);
   const needsCook = (id: string) => W.get(id)!.def.attention !== 'external';
-  const recommended = input.paused ? null : (dueNow.find(needsCook) ?? dueNow[0] ?? null);
+  // No-wait followers of a finished task come first (e.g. drain → steam-dry), then anything due.
+  const followerFirst = dueNow.filter((id) => {
+    const f = W.get(id)!.def.follows;
+    return f != null && W.get(f)!.status === 'done';
+  });
+  const recommended = input.paused ? null : (followerFirst[0] ?? dueNow.find(needsCook) ?? dueNow[0] ?? null);
   const next = order.find((id) => out[id]!.status === 'scheduled' && id !== recommended) ?? null;
   const dueCheckpoints = Object.values(out)
     .flatMap((pt) => pt.checkpoints.filter((c) => c.due).map((c) => ({ taskId: pt.id, id: c.id, label: c.label, text: c.text, atMs: c.atMs })))

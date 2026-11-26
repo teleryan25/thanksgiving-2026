@@ -18,6 +18,7 @@ export interface SimOptions {
   targetMs?: number;
   /** Stop after this many plan computations (safety). */
   maxSteps?: number;
+  trace?: (line: string) => void;
 }
 
 export interface SimResult {
@@ -29,11 +30,24 @@ export interface SimResult {
   historyViolations: string[];
   honestyViolations: string[];
   checkpointInterruptions: number;
+  /** No-wait links that started late in execution (e.g. cook busy because something overran). */
+  noWaitGaps: string[];
+  /** Dishes whose exposure reached the limit, and whether the app warned (danger) beforehand. */
+  exposureBreaches: { dish: string; minutes: number; warnedAt: number | null }[];
   maxExposureMin: number;
   steps: number;
   log: { taskId: string; start: number; end: number }[];
   oven: { taskId: string; start: number; end: number; tempF: number }[];
   finalPlan: Plan;
+  finalState: CookState;
+  finalNow: number;
+}
+
+/** Start times of still-scheduled tasks, fed back as the next plan's stability hint. */
+export function hintFrom(p: Plan): Record<string, number> {
+  const h: Record<string, number> = {};
+  for (const [id, x] of Object.entries(p.tasks)) if (x.status === 'scheduled' && x.startMs != null) h[id] = x.startMs;
+  return h;
 }
 
 export function runSimulation(opts: SimOptions): SimResult {
@@ -42,6 +56,7 @@ export function runSimulation(opts: SimOptions): SimResult {
   let t = start;
   let state: CookState = initialState('sim', t);
   const act = (a: Action) => {
+    opts.trace?.(`${fmtTime(t)} ${a.type} ${'taskId' in a ? a.taskId : ''}${'min' in a ? ` ${a.min}` : ''}`);
     state = reduce(state, a, t).state;
   };
   if (start !== DEFAULT_KITCHEN_START) act({ type: 'setKitchenStart', ms: start });
@@ -63,13 +78,14 @@ export function runSimulation(opts: SimOptions): SimResult {
   let steps = 0;
   let interruptions = 0;
   let maxExposure = 0;
+  const firstDanger = new Map<string, number>();
   const maxSteps = opts.maxSteps ?? 2000;
   let p: Plan = plan(planInputFrom(state, t));
 
   const done = () => TASKS.every((tk) => p.tasks[tk.id]!.status === 'done' || p.tasks[tk.id]!.status === 'skipped' || p.tasks[tk.id]!.status === 'blocked');
 
   while (steps < maxSteps) {
-    const input = planInputFrom(state, t);
+    const input = { ...planInputFrom(state, t), hint: hintFrom(p) };
     p = plan(input);
     steps++;
     if (firstProjection == null) firstProjection = p.dinnerMs;
@@ -81,6 +97,7 @@ export function runSimulation(opts: SimOptions): SimResult {
       if ((x.status === 'running' || x.status === 'scheduled') && x.endMs! <= t && tk.duration.nominal > 0) honesty.push(`${fmtTime(t)} ${tk.id} projected to end in the past`);
     }
     if (p.dinnerMs != null && !done() && p.dinnerMs <= t) honesty.push(`${fmtTime(t)} dinner projected in the past`);
+    for (const w of p.warnings) if (w.code === 'exposure' && w.level === 'danger' && w.dish && !firstDanger.has(w.dish)) firstDanger.set(w.dish, t);
     if (done()) break;
 
     let acted = false;
@@ -135,6 +152,7 @@ export function runSimulation(opts: SimOptions): SimResult {
 
   // ── Verify the executed history ──
   const hist: string[] = [];
+  const gaps: string[] = [];
   const log: SimResult['log'] = [];
   const evs = state.events;
   const startAt = new Map<string, number>();
@@ -168,7 +186,7 @@ export function runSimulation(opts: SimOptions): SimResult {
     }
     if (tk.follows) {
       const pe = endAt.get(tk.follows);
-      if (pe != null && s - pe > 2 * MINUTE) hist.push(`${tk.id} started ${(s - pe) / MINUTE} min after ${tk.follows} (no-wait)`);
+      if (pe != null && s - pe > 2 * MINUTE) gaps.push(`${tk.id} started ${(s - pe) / MINUTE} min after ${tk.follows}`);
     }
   }
   // Resource usage minute by minute from actual history.
@@ -189,7 +207,8 @@ export function runSimulation(opts: SimOptions): SimResult {
         oven += tk.oven.slots;
         temps.add(tk.oven.tempF);
       }
-      const used = evs.find((e) => e.type === 'start' && e.taskId === tk.id && 'cookware' in e)?.cookware ?? [];
+      const se = evs.find((e) => e.type === 'start' && e.taskId === tk.id);
+      const used = (se && se.type === 'start' ? se.cookware : undefined) ?? [];
       for (const c of used) {
         if (ware.has(c)) hist.push(`${fmtTime(m)} ${c} used twice`);
         ware.add(c);
@@ -216,10 +235,14 @@ export function runSimulation(opts: SimOptions): SimResult {
     historyViolations: [...new Set(hist)],
     honestyViolations: [...new Set(honesty)],
     checkpointInterruptions: interruptions,
+    noWaitGaps: gaps,
+    exposureBreaches: finalPlan.exposures.filter((e) => e.projectedMin >= e.limitMin).map((e) => ({ dish: e.dish, minutes: e.projectedMin, warnedAt: firstDanger.get(e.dish) ?? null })),
     maxExposureMin: maxExposure,
     steps,
     log,
     oven: log.filter((l) => TASKS.find((x) => x.id === l.taskId)!.oven).map((l) => ({ ...l, tempF: TASKS.find((x) => x.id === l.taskId)!.oven!.tempF })),
     finalPlan,
+    finalState: state,
+    finalNow: t,
   };
 }

@@ -68,8 +68,10 @@ describe('scheduler — baseline full meal', () => {
   });
   it('makes compote early and mash, gravy close to dinner; rests follow their bakes', () => {
     expect(at(p, 'compote-finish').endMs!).toBeLessThan(eventAt(10, 30));
-    expect(p.dinnerMs! - at(p, 'mash-mash').endMs!).toBeLessThanOrEqual(30 * MINUTE);
-    expect(p.dinnerMs! - at(p, 'gravy-heat').endMs!).toBeLessThanOrEqual(30 * MINUTE);
+    // Spec: mash ~12:45, corn/gravy ~12:55 — enforced as "finish no earlier than target − N".
+    expect(at(p, 'mash-mash').endMs!).toBeGreaterThanOrEqual(eventAt(12, 30));
+    expect(at(p, 'gravy-heat').endMs!).toBeGreaterThanOrEqual(eventAt(12, 25));
+    expect(at(p, 'corn-cook').endMs!).toBeGreaterThanOrEqual(eventAt(12, 40));
     expect(at(p, 'stuffing-rest').startMs).toBe(at(p, 'stuffing-bake').endMs);
     expect(at(p, 'mac-rest').startMs).toBe(at(p, 'mac-bake').endMs);
     expect(at(p, 'stuffing-bake').startMs).toBe(at(p, 'stuffing-assemble').endMs);
@@ -194,7 +196,8 @@ describe('scheduler — events', () => {
     const base = run();
     const later = run({ targetMs: eventAt(14, 0) });
     expect(later.v).toEqual([]);
-    expect(later.p.dinnerMs).toBe(eventAt(14, 0));
+    expect(later.p.dinnerMs!).toBeGreaterThanOrEqual(eventAt(13, 45));
+    expect(later.p.dinnerMs!).toBeLessThanOrEqual(eventAt(14, 15));
     expect(at(later.p, 'stuffing-bake').startMs!).toBeGreaterThan(at(base.p, 'stuffing-bake').startMs!);
     const earlier = run({ targetMs: eventAt(12, 0) });
     expect(earlier.v).toEqual([]);

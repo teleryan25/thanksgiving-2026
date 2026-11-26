@@ -1345,6 +1345,7 @@ export const TASKS: TaskDef[] = [
   },
   {
     id: 'mash-warm-cream',
+    finishWithinOfDinner: 45,
     dish: 'mash',
     title: 'Warm cream with thyme',
     kind: 'stove',
@@ -1365,6 +1366,7 @@ export const TASKS: TaskDef[] = [
   },
   {
     id: 'mash-mash',
+    finishWithinOfDinner: 30,
     follows: 'mash-boil',
     dish: 'mash',
     title: 'Mash potatoes',
@@ -1397,6 +1399,7 @@ export const TASKS: TaskDef[] = [
   // ── Corn ──
   {
     id: 'corn-cook',
+    finishWithinOfDinner: 20,
     dish: 'corn',
     title: 'Make honey butter corn',
     kind: 'stove',
@@ -1423,6 +1426,7 @@ export const TASKS: TaskDef[] = [
   // ── Gravy ──
   {
     id: 'gravy-heat',
+    finishWithinOfDinner: 35,
     dish: 'gravy',
     title: 'Heat gravy',
     kind: 'stove',
@@ -1518,6 +1522,7 @@ export const TASKS: TaskDef[] = [
   // ── Bread ──
   {
     id: 'bread-slice',
+    finishWithinOfDinner: 40,
     dish: 'bread',
     title: 'Slice Parmesan bread',
     kind: 'prep',
