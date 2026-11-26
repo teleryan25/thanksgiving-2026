@@ -6,7 +6,7 @@
  * undone event itself created or cancelled).
  */
 import { COOKWARE, DISHES, TASKS } from './recipes';
-import type { PlanInput, PlanSettings, TaskProgress } from './scheduler';
+import { runningEnds, type PlanInput, type PlanSettings, type TaskProgress } from './scheduler';
 import { DEFAULT_KITCHEN_START, DEFAULT_TARGET, DEFAULT_TURKEY_ETA, MINUTE } from './time';
 import { ackTimer, cancelTimer, createTimer, extendTimer, timerStatus, type Timer } from './timers';
 
@@ -234,8 +234,7 @@ export function reduce(state: CookState, action: Action, now: number): Result {
       if (t.attention !== 'external' && pr?.startedAt == null) throw new ActionError(`Start "${t.title}" before marking it done.`);
       if ((t.safety || t.confirm) && !action.safetyConfirmed) throw new ActionError(t.safety ? `Confirm ${t.safety.what} reached ${t.safety.tempF}°F.` : `Confirm: ${t.confirm}.`);
       if (pr?.startedAt != null && t.enforceMin) {
-        const ext = (pr.extensions ?? []).reduce((a, x) => a + x.min, 0);
-        const minEnd = pr.startedAt + (t.duration.min + ext) * MINUTE;
+        const minEnd = runningEnds(t, pr).reqEnd;
         if (now < minEnd && !action.earlyConfirmed) throw new ActionError(`${t.title} has a ${t.duration.min}-minute minimum. Confirm the doneness cues to finish early.`);
       }
       const cancelled: string[] = [];

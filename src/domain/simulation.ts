@@ -5,8 +5,8 @@
  * passed. The executed history is then independently verified.
  */
 import { DISHES, TASKS } from './recipes';
-import { mulberry32, plan, verifyPlan, type Plan } from './scheduler';
-import { initialState, planInputFrom, reduce, type Action, type CookState } from './state';
+import { mulberry32, plan, runningEnds, verifyPlan, type Plan } from './scheduler';
+import { derive, initialState, planInputFrom, reduce, type Action, type CookState } from './state';
 import { DEFAULT_KITCHEN_START, MINUTE, fmtTime } from './time';
 
 export interface SimOptions {
@@ -117,8 +117,10 @@ export function runSimulation(opts: SimOptions): SimResult {
         acted = true;
       } else if (x.overdue || x.endMs! <= t + MINUTE) {
         // The cook checks, sees it's not done, and extends by the honest remaining time.
-        const remain = Math.ceil((realEnd - t) / MINUTE);
-        if (remain > 0 && x.endMs! < realEnd) {
+        const pr = derive(state.events).progress[tk.id]!;
+        const { nomEnd } = runningEnds(tk, pr);
+        const remain = Math.floor((realEnd - Math.max(nomEnd, Math.ceil(t / MINUTE) * MINUTE)) / MINUTE);
+        if (remain > 0 && nomEnd < realEnd) {
           act({ type: 'extend', taskId: tk.id, min: remain });
           acted = true;
         }

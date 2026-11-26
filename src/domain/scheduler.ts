@@ -212,6 +212,27 @@ export function cookPattern(def: TaskDef, s: number, d: number, owner = true): [
   return out;
 }
 
+/**
+ * Planned (nominal) and required (minimum) end for a started task, folding extensions:
+ * pre-start extensions add to duration; while running, end = max(end, at) + minutes.
+ * Shared by the planner and the reducer so both agree on "never shortened".
+ */
+export function runningEnds(def: TaskDef, p: TaskProgress): { nomEnd: number; reqEnd: number } {
+  const s = p.startedAt!;
+  let nomEnd = s + def.duration.nominal * MINUTE;
+  let reqEnd = s + def.duration.min * MINUTE;
+  for (const e of [...(p.extensions ?? [])].sort((a, b) => a.at - b.at)) {
+    if (e.at < s) {
+      nomEnd += e.min * MINUTE;
+      reqEnd += e.min * MINUTE;
+    } else {
+      nomEnd = Math.max(nomEnd, Math.ceil(e.at / MINUTE) * MINUTE) + e.min * MINUTE;
+      reqEnd = Math.max(reqEnd, nomEnd);
+    }
+  }
+  return { nomEnd, reqEnd };
+}
+
 const extTotal = (p?: TaskProgress) => (p?.extensions ?? []).reduce((a, e) => a + e.min, 0);
 
 export function plan(input: PlanInput): Plan {
@@ -266,12 +287,9 @@ export function plan(input: PlanInput): Plan {
       w.status = 'running';
       w.fixed = true;
       const s = rel(p.startedAt);
-      let nomEnd = s + def.duration.nominal;
-      let reqEnd = s + def.duration.min;
-      for (const e of [...(p.extensions ?? [])].sort((a, b) => a.at - b.at)) {
-        nomEnd = Math.max(nomEnd, relCeil(e.at)) + e.min;
-        reqEnd = Math.max(reqEnd, nomEnd);
-      }
+      const ends = runningEnds(def, p);
+      const nomEnd = relCeil(ends.nomEnd);
+      const reqEnd = relCeil(ends.reqEnd);
       w.start = s;
       w.minEnd = reqEnd;
       w.overdue = Math.max(nomEnd, reqEnd) <= now;
